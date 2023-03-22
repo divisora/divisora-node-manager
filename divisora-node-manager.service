@@ -1,0 +1,13 @@
+[Unit]
+Description=Divisora Node Manager
+After=multi-user.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+Restart=always
+ExecStart=/usr/bin/python3 /usr/bin/divisora/node-manager.py -s PLACEHOLDER -p 80 --ldap PLACEHOLDER --src PLACEHOLDER
+
+[Install]
+WantedBy=multi-user.target
