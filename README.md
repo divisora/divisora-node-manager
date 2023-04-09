@@ -33,5 +33,9 @@ kdestroy
 kinit -k -t /etc/krb5.keytab
 ipa-getkeytab -v -Y GSSAPI -s ipa.domain.internal -p host/cubicle-user1-ubuntu.domain.internal -k /opt/keytabs/cubicle-user1-ubuntu.domain.internal.keytab
 
+# Add service
+ipa service-add HTTP/node-1.domain.internal@DOMAIN.INTERNAL
+ipa-getcert request -f /opt/certs/node-1.domain.internal.crt -k /opt/certs/node-1.domain.internal.key -K HTTP/node-1.domain.internal@DOMAIN.INTERNAL -D node-1.domain.internal
+
 # Mount /opt/keytabs/cubicle-user1-ubuntu.domain.internal.keytab -> /etc/krb5.keytab
 ```

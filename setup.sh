@@ -55,6 +55,7 @@ fi
 # Create folder and add the program
 sudo mkdir -p /opt/homefolders
 sudo mkdir -p /opt/keytabs
+sudo mkdir -p /opt/certs
 sudo mkdir -p /usr/bin/divisora
 sudo cp node-manager.py /usr/bin/divisora/node-manager.py
 

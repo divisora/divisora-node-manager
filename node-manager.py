@@ -40,11 +40,11 @@ class Manager(Thread):
 
     def run(self):
         while True:
-            self.ipa_get_join_hash() # TODO: Should be called inside compare_machines and only for the machines that accually being started
+            #self.ipa_get_join_hash() # TODO: Should be called inside compare_machines and only for the machines that accually being started
             self.compare_machines()
             time.sleep(2)
 
-    def ipa_get_join_hash(self, machine_name = "openbox-latest-user1"):
+    def ipa_get_machine_keytab(self, machine_name):
         keytab_path = "/opt/keytabs/{}.{}/krb5.keytab".format(machine_name, self.domain) # TODO: Make it more dynamic
         if is_file(keytab_path):
             return
@@ -53,16 +53,57 @@ class Manager(Thread):
         machine_keytab_path = "/etc/krb5.keytab" # TODO: Make it more dynamic
         if not is_file(machine_keytab_path):
             return
+        
         command = "kinit -k -t {}".format(machine_keytab_path)
         output = subprocess.run(command.split(" "), stdout=subprocess.PIPE, text=True)
         print(output) # TODO: write it to syslog instead
 
         # Get the keytab of the cubicle
-        # TODO: Make it more dynamic
         command = "ipa-getkeytab -Y GSSAPI -r -p host/{}.{} -k {}".format(machine_name, self.domain, keytab_path) # -r is important, otherwise the keytab could be rewritten.
         output = subprocess.run(command.split(" "), stdout=subprocess.PIPE, text=True)
         print(output) # TODO: write it to syslog instead
+
+    def ipa_remove_machine_keytab(self, machine_name):
+        keytab_path = "/opt/keytabs/{}.{}/krb5.keytab".format(machine_name, self.domain)
+        if not is_file(keytab_path):
+            return
         
+        command = "rm -f {}".format(keytab_path)
+        output = subprocess.run(command.split(" "), stdout=subprocess.PIPE, text=True)
+        #print(output)
+
+    def ipa_get_machine_certificate(self, machine_name):
+        cert_path = "/opt/certs/{0}.{1}/{0}.{1}.crt".format(machine_name, self.domain)
+        key_path = "/opt/certs/{0}.{1}/{0}.{1}.key".format(machine_name, self.domain)
+        if is_file(cert_path) or is_file(key_path):
+            print("Cert- or/and key-file were found")
+            return
+
+        command = "ipa-getcert request -f /opt/certs/{0}.{1}/{0}.{1}.crt -k /opt/certs/{0}.{1}/{0}.{1}.key -K HTTP/{0}.{1}@{2} -N {0}.{1} -D {0}.{1}".format(machine_name, self.domain, self.domain.upper())
+        output = subprocess.run(command.split(" "), stdout=subprocess.PIPE, text=True)
+        print(output) # TODO: write it to syslog instead
+
+    def ipa_remove_machine_certificate(self, machine_name):
+        cert_path = "/opt/certs/{0}.{1}/{0}.{1}.crt".format(machine_name, self.domain)
+        key_path = "/opt/certs/{0}.{1}/{0}.{1}.key".format(machine_name, self.domain)
+        if not is_file(cert_path) and not is_file(key_path):
+            return
+        
+        # Unsubscribe to certificate renewal
+        command = "ipa-getcert stop-tracking -f /opt/certs/{0}.{1}.crt -k /opt/certs/{0}.{1}.key".format(machine_name, self.domain)
+        output = subprocess.run(command.split(" "), stdout=subprocess.PIPE, text=True)
+        print(output) # TODO: write it to syslog instead
+
+        # Remove cert-file
+        command = "rm -f {}".format(cert_path)
+        output = subprocess.run(command.split(" "), stdout=subprocess.PIPE, text=True)
+        print(output) # TODO: write it to syslog instead
+
+        # Remove key-file
+        command = "rm -f {}".format(key_path)
+        output = subprocess.run(command.split(" "), stdout=subprocess.PIPE, text=True)
+        print(output) # TODO: write it to syslog instead        
+
     def connect(self, address, port, method, uri):
         res = None
         try:
@@ -157,6 +198,9 @@ class Manager(Thread):
         if not self.is_docker_machine_deployed(name):
             if not self.is_docker_network_deployed(machine['network']):
                 self.create_docker_network(machine['network'])
+            self.ipa_get_machine_keytab(name)
+            self.ipa_get_machine_certificate(name)
+            
             try:
                 # TODO: check if homefolder actually exist. make som skel-copy too?
                 # TODO: Maybe not trust 'name'?
@@ -183,12 +227,22 @@ class Manager(Thread):
                             'bind': '/opt/keytabs',
                             'mode': 'rw'
                         },
+                        '/opt/certs/' + hostname + '/': {
+                            'bind': '/etc/ssl/certs/' + hostname,
+                            'mode': 'ro'
+                        },
+                        '/opt/certs/' + hostname + '/': {
+                            'bind': '/etc/ssl/private/' + hostname,
+                            'mode': 'ro'
+                        },                          
                     },
                     cap_add = ["sys_nice"],
                 )
                 c.start()
             except Exception as e:
                 print("[Manager] Error: {}".format(e))
+                self.ipa_remove_machine_keytab(name)
+                self.ipa_remove_machine_certificate(name)
                 return False
     
         return True
@@ -221,6 +275,16 @@ class Manager(Thread):
                     ports = {
                         '6080/tcp': machine['novnc_port'],  # TODO: make dynamic? 6080 = default for NoVNC
                     },
+                    volumes = {
+                        '/opt/certs/app.crt': {
+                            'bind': '/etc/ssl/certs/app.crt',
+                            'mode': 'ro'
+                        },
+                        '/opt/certs/app.key': {
+                            'bind': '/etc/ssl/private/app.key',
+                            'mode': 'ro'
+                        },                        
+                    },                    
                 )
                 c.start()
             except Exception as e:
@@ -244,13 +308,16 @@ class Manager(Thread):
             else:
                 res = True
             finally:
-                # TODO: will run twice since we have novnc-machine and machine for the user. Maybe check for a 'vnc' identifier
-                keytab_path = "/opt/keytabs/{}.{}/krb5.keytab".format(name, self.domain)
-                #print("Remove keytab from {}".format(keytab_path))
-                if is_file(keytab_path):
-                    command = "rm -f {}".format(keytab_path)
-                    output = subprocess.run(command.split(" "), stdout=subprocess.PIPE, text=True)
-                    #print(output)
+                # # TODO: will run twice since we have novnc-machine and machine for the user. Maybe check for a 'vnc' identifier
+                # keytab_path = "/opt/keytabs/{}.{}/krb5.keytab".format(name, self.domain)
+                # #print("Remove keytab from {}".format(keytab_path))
+                # if is_file(keytab_path):
+                #     command = "rm -f {}".format(keytab_path)
+                #     output = subprocess.run(command.split(" "), stdout=subprocess.PIPE, text=True)
+                #     #print(output)
+
+                self.ipa_remove_machine_keytab(name)
+                self.ipa_remove_machine_certificate(name)
         
         return res
     
@@ -325,11 +392,14 @@ class Manager(Thread):
             # Add cubicle
             if not self.is_docker_machine_deployed(machine['name']):
                 print("[Manager] Adding machine {}".format(machine['name']))
-                self.add_docker_machine(machine)
-            # Add NoVNC to that cubicle
-            if not self.is_docker_machine_deployed(machine['name'] + '_novnc'):
-                print("[Manager] Adding machine {}".format(machine['name'] + '_novnc'))            
-                self.add_docker_novnc_machine(machine)
+                success = self.add_docker_machine(machine)
+                # Ignore NoVNC if Cubicle failed for any reason
+                if not success:
+                    continue
+                # Add NoVNC to that cubicle
+                if not self.is_docker_machine_deployed(machine['name'] + '_novnc'):
+                    print("[Manager] Adding machine {}".format(machine['name'] + '_novnc'))
+                    self.add_docker_novnc_machine(machine)
     
         # Remove machines that no longer are in the expected list
         for machine in self.get_docker_machines():
